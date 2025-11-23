@@ -1,108 +1,50 @@
-import { resolve } from "bun";
-import { Category } from "./src/api/class/Category.ts";
-import { Variable, VariableValue, VariableValues } from "./src/api/class/Variable.ts";
+import type { Category } from "./src/api/class/Category.ts";
 import { UserPB } from "./src/api/class/UserPB.ts";
+import { DictionnaireCategorie, DictionnaireCombinaison, DictionnaireVariable } from "./src/Dictionnaires.ts";
+import { SimplifiedVariable, SimplifiedVariableUnique, SimplifiedVariableValue, type SimplifiedCategory } from "./src/SimplifiedClass.ts";
 
-function recursiveVariablePossibilities(accumulatedValues: { variableId: string; variableValue: VariableValues }[], remainingVariable: Variable[], result: { variableId: string; variableValue: VariableValues }[][]) {
-  const currentVariable = remainingVariable[0];
+const GAME_ID = "deltarune";
+const USER_ID = "tenebrosful";
 
-  if (currentVariable === undefined) {
-    result.push([...accumulatedValues]);
-    return result;
+const dicoVariables = new DictionnaireVariable();
+await dicoVariables.initialize(GAME_ID);
+
+// console.log(dicoVariables.variables);
+
+const dicoCategories = new DictionnaireCategorie();
+await dicoCategories.initialize(GAME_ID, dicoVariables);
+
+// console.log(dicoCategories.categories)
+
+const dicoCombinaison = new DictionnaireCombinaison();
+dicoCombinaison.initialize(dicoCategories);
+
+dicoCombinaison.combinaisons.forEach(c => {
+  console.log(`${c.categorie.name} - ${c.variables.map(v => v.value.label).join(", ")}`)
+})
+
+const pbs = await UserPB.fetch(USER_ID, GAME_ID);
+
+const combinaisonsPB = new DictionnaireCombinaison();
+
+pbs.forEach(pb => {
+  const category = dicoCategories.categories.get(pb.run.category) as SimplifiedCategory;
+  const variables = Object.entries(pb.run.values).map(([variableId, valueId]) => {
+    const variable = dicoVariables.variables.get(variableId) as SimplifiedVariable;
+
+    if (!variable?.isSubCategory) { return; }
+
+    return new SimplifiedVariableUnique(variableId, category.id, variable.name, variable.values.find(v => v.id === valueId) as SimplifiedVariableValue);
+  }).filter(v => v != undefined);
+
+  combinaisonsPB.combinaisons.push({ categorie: category, variables: variables })
+
+  console.log(`(${pb.place}) ${category?.name} - ${Object.entries(pb.run.values)
+    .map(([variableId, valueId]) => dicoVariables.variables.get(variableId)?.values.find(v => v.id === valueId)?.label).join(", ")}`)
+})
+
+dicoCombinaison.combinaisons.forEach(c => {
+  if (!combinaisonsPB.contain(c.categorie, c.variables)) {
+    console.log(`Catégorie non jouée : ${c.categorie.name} (${c.variables.map(v => v.value.label).join(", ")})`)
   }
-
-  const restVariables = remainingVariable.slice(1);
-
-  Object.entries(currentVariable.values.values).forEach(([valueId, value]) => {
-    accumulatedValues.push({ variableId: currentVariable.id, variableValue: value });
-    recursiveVariablePossibilities(accumulatedValues, restVariables, result);
-    accumulatedValues.pop();
-  });
-
-  return result;
-}
-
-console.log("Hello via Bun!");
-
-console.log();
-
-const categories = await Category.fetch("deltarune");
-
-const dicoCategories = new Map<string, Category>();
-
-categories.forEach((category) => {
-  dicoCategories.set(category.id, category);
-});
-
-const variables = (await Variable.fetch("deltarune")).filter(v => v["is-subcategory"]);
-
-const dicoVariables = new Map<string, Variable>();
-
-variables.forEach((variable) => {
-  dicoVariables.set(variable.id, variable);
-});
-
-const everyCategoryVariables = new Map<string, { variableId: string; variableValue: VariableValues }[][]>();
-
-categories.forEach(async (category) => {
-  const variables = (await category.fetchVariables()).filter(v => v["is-subcategory"]);
-  console.log(`Category: ${category.name} (ID: ${category.id})`);
-  const result = recursiveVariablePossibilities([], variables, []);
-  everyCategoryVariables.set(category.id, result);
-
-  console.log(`  - Total combinations of subcategory variables: ${result.length}`);
-  result.forEach((combination, index) => {
-    console.log(`    Combination ${index + 1}: ${combination.map(v => `${v.variableValue.label} (Variable ID: ${v.variableId})`).join(", ")}`);
-  });
-});
-
-const myPb = await UserPB.fetch("Tenebrosful", "deltarune");
-
-const everyPBCategoryVariables = new Map<string, { variableId: string; variableValue: VariableValues }[]>();
-
-myPb.forEach((pb) => {
-  const categoryName = dicoCategories.get(pb.run.category)?.name || "Unknown Category";
-  const variables: [string, string][] = Object.entries(pb.run.values);
-
-  const subcategory = variables.filter(([key, value]) => {
-    const variable = dicoVariables.get(key);
-    if (!variable) {
-      return false;
-    }
-    return true;
-  });
-
-  const variablesNames = subcategory.map(([key, value]) => {
-    const variable = dicoVariables.get(key);
-    if (!variable) {
-      return;
-    }
-
-    return variable.values.values[value]?.label || "Unknown Variable";
-
-
-    // return variable ? Array.from(variable.values.values).map(([variableID, valeur]) => dicoVariables.get(variableID)?.values.values.get(value)?.label) : "Unknown Variable";
-  }).join(", ");
-
-  console.log(`User PB ${categoryName} (${variablesNames}) Run ID: ${pb.run.id} in place ${pb.place}`);
-  everyPBCategoryVariables.set(pb.run.category, subcategory.map(([key, value]) => {
-    const variable = dicoVariables.get(key)
-    return { variableId: key, variableValue: variable!.values.values[value] }
-  }));
-});
-
-const notRunned = new Map([...everyCategoryVariables.entries()].filter(([categoryId, _]) => !everyPBCategoryVariables.has(categoryId)));
-
-notRunned.forEach(([categoryId, variableCombinations]) => {
-  const categoryName = dicoCategories.get(categoryId)?.name || "Unknown Category";
-  console.log(`Category: ${categoryName} (ID: ${categoryId}) has not been run by the user.`);
-  console.log(`  - Total combinations of subcategory variables: ${variableCombinations.length}`);
-  variableCombinations.forEach((combination, index) => {
-    console.log(`    Combination ${index + 1}: ${combination.map(v => `${v.variableValue.label} (Variable ID: ${v.variableId})`).join(", ")}`);
-  });
-});
-
-
-// everyCategoryVariables.forEach((variableCombinations, categoryId) => {
-//   console.log(`Category ID: ${categoryId} has ${variableCombinations.length} combinations of subcategory variables.`);
-// });
+})
